@@ -1,0 +1,27 @@
+{
+    "name": "lerni/cms-task",
+    "description": "Background BuildTask execution with real-time progress for Silverstripe CMS",
+    "type": "silverstripe-vendormodule",
+	"homepage": "https://github.com/lerni/cms-task",
+    "license": "BSD-3-Clause",
+    "authors": [
+        {
+            "name": "Lukas Erni",
+            "email": "le@kraftausdruck.ch"
+        }
+    ],
+    "require": {
+        "silverstripe/framework": "^6.0",
+        "silverstripe/cms": "^6.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kraftausdruck\\": "src/"
+        }
+    },
+    "extra": {
+        "expose": [
+            "client/dist"
+        ]
+    }
+}

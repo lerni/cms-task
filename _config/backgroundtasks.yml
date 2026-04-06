@@ -1,0 +1,18 @@
+---
+Name: cms-task
+---
+
+# Store interface binding
+SilverStripe\Core\Injector\Injector:
+  Kraftausdruck\Contracts\TaskProgressStoreInterface:
+    class: Kraftausdruck\Stores\PsrCacheProgressStore
+
+---
+Name: cms-task-routes
+Before: 'modelascontrollercatchallroute'
+After: '#coreroutes'
+---
+# SSE streaming controller
+SilverStripe\Control\Director:
+  rules:
+    'task-stream': 'Kraftausdruck\Controller\TaskStreamController'

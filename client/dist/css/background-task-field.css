@@ -1,0 +1,122 @@
+/* BackgroundTaskField — CMS styles */
+
+.background-task-field {
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: #f8f9fa;
+}
+
+/* Header */
+.background-task-field__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.background-task-field__title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.background-task-field__status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: #e9ecef;
+  color: #495057;
+}
+
+.background-task-field__status[data-status="running"] {
+  background: #cce5ff;
+  color: #004085;
+}
+
+.background-task-field__status[data-status="finished"] {
+  background: #d4edda;
+  color: #155724;
+}
+
+.background-task-field__status[data-status="stopped"] {
+  background: #fff3cd;
+  color: #856404;
+}
+
+/* Controls */
+.background-task-field__controls {
+  margin-bottom: 8px;
+}
+
+.background-task-field__controls .btn {
+  margin-right: 8px;
+}
+
+/* Progress */
+.background-task-field__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.background-task-field__progress-track {
+  flex: 1;
+  height: 6px;
+  background: #dee2e6;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.background-task-field__progress-bar {
+  height: 100%;
+  background: #0074cc;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.background-task-field__progress-text {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+  color: #495057;
+}
+
+/* Log */
+.background-task-field__log {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 3px;
+  background: #fff;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.background-task-field__log-content {
+  padding: 8px;
+}
+
+.background-task-field__log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.background-task-field__log-line--error {
+  color: #dc3545;
+}
+
+.background-task-field__log-line--warning {
+  color: #856404;
+}
+
+.background-task-field__log-line--success {
+  color: #28a745;
+}
+
+.background-task-field__log-line--info {
+  color: #212529;
+}
