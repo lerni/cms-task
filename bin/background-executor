@@ -1,0 +1,245 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Standalone background task executor.
+ *
+ * Runs a Silverstripe BuildTask as a subprocess via sake, captures stdout
+ * line by line, writes JSONL to a stream file, and updates task metadata
+ * in the shared PSR-16 cache store.
+ *
+ * This script intentionally does NOT boot Silverstripe — it only needs
+ * composer autoload and the PsrCacheProgressStore class. The target task
+ * (invoked via sake) handles its own Silverstripe bootstrap.
+ *
+ * Invoked by BackgroundTaskService as a detached CLI process:
+ *   php bin/background-executor --target-task=ping-google --task-id=abc123 \
+ *       --base-path=/var/www/html --cache-dir=/tmp/silverstripe-cache
+ */
+
+// Find composer autoload — walk up from this script's location
+$autoloadPaths = [
+    __DIR__ . '/../../../autoload.php',   // installed as vendor/lerni/cms-task/bin/
+    __DIR__ . '/../vendor/autoload.php',  // standalone / development
+    __DIR__ . '/../../vendor/autoload.php', // local path module at project root (e.g. cms-task/)
+];
+
+$autoloaded = false;
+foreach ($autoloadPaths as $autoloadPath) {
+    if (file_exists($autoloadPath)) {
+        require $autoloadPath;
+        $autoloaded = true;
+
+        break;
+    }
+}
+
+if (!$autoloaded) {
+    fwrite(STDERR, "Cannot find composer autoload.php\n");
+    exit(1);
+}
+
+// When running as a local path module (not composer-installed), the module's
+// own namespace may not be in the project's autoload map. Register it manually.
+$moduleDir = dirname(__DIR__);
+spl_autoload_register(function (string $class) use ($moduleDir): void {
+    $prefix = 'Kraftausdruck\\';
+    if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
+        return;
+    }
+    $relative = substr($class, strlen($prefix));
+    $file = $moduleDir . '/src/' . str_replace('\\', '/', $relative) . '.php';
+    if (file_exists($file)) {
+        require $file;
+    }
+});
+
+// Parse CLI options
+$options = getopt('', [
+    'target-task:',
+    'task-id:',
+    'task-options::',
+    'base-path:',
+    'cache-dir:',
+]);
+
+$targetTask = $options['target-task'] ?? null;
+$taskId = $options['task-id'] ?? null;
+$taskOptions = json_decode($options['task-options'] ?? '{}', true) ?: [];
+$basePath = $options['base-path'] ?? null;
+$cacheDir = $options['cache-dir'] ?? null;
+
+if (!$targetTask || !$taskId || !$basePath) {
+    fwrite(STDERR, "Usage: background-executor --target-task=NAME --task-id=ID --base-path=PATH [--cache-dir=DIR] [--task-options=JSON]\n");
+    exit(1);
+}
+
+// Instantiate progress store directly — no Injector, no framework
+$store = new \Kraftausdruck\Stores\PsrCacheProgressStore($cacheDir);
+
+try {
+    $store->updateTask($taskId, [
+        'status' => 'running',
+        'message' => "Executing {$targetTask}",
+    ]);
+
+    $sakeCommand = buildSakeCommand($basePath, $targetTask, $taskOptions);
+    $exitCode = runAndStream($sakeCommand, $taskId, $store);
+
+    $finalStatus = $exitCode === 0 ? 'completed' : 'failed';
+    $store->updateTask($taskId, [
+        'status' => $finalStatus,
+        'exit_code' => $exitCode,
+        'completed' => true,
+        'message' => $exitCode === 0 ? 'Task completed successfully' : 'Task failed',
+    ]);
+    $store->removeFromActiveIndex($taskId);
+
+    exit($exitCode === 0 ? 0 : 1);
+} catch (\Throwable $e) {
+    $store->updateTask($taskId, [
+        'status' => 'failed',
+        'completed' => true,
+        'message' => $e->getMessage(),
+    ]);
+    $store->removeFromActiveIndex($taskId);
+    fwrite(STDERR, "Execution failed: {$e->getMessage()}\n");
+    exit(1);
+}
+
+/**
+ * Run the sake subprocess and stream its stdout to the JSONL stream file.
+ */
+function runAndStream(string $command, string $taskId, \Kraftausdruck\Contracts\TaskProgressStoreInterface $store): int
+{
+    $streamFile = $store->getStreamFilePath($taskId);
+    $streamHandle = fopen($streamFile, 'a');
+
+    if (!$streamHandle) {
+        fwrite(STDERR, "Cannot open stream file: {$streamFile}\n");
+
+        return 1;
+    }
+
+    $descriptors = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+
+    $process = proc_open($command, $descriptors, $pipes);
+    if (!is_resource($process)) {
+        fclose($streamHandle);
+        fwrite(STDERR, "Failed to start subprocess: {$command}\n");
+
+        return 1;
+    }
+
+    fclose($pipes[0]); // close stdin
+
+    while (!feof($pipes[1]) || !feof($pipes[2])) {
+        $read = [$pipes[1], $pipes[2]];
+        $write = null;
+        $except = null;
+
+        if (stream_select($read, $write, $except, 0, 100000) > 0) {
+            foreach ($read as $stream) {
+                $line = fgets($stream);
+                if ($line === false) {
+                    continue;
+                }
+
+                $line = rtrim($line);
+                if ($line === '') {
+                    continue;
+                }
+
+                $clean = preg_replace('/\e\[[0-9;]*m/', '', $line);
+
+                $progress = extractProgress($clean, $taskId, $store);
+
+                $data = [
+                    'text' => $clean,
+                    'type' => detectLineType($clean),
+                    'ts' => time(),
+                ];
+                if ($progress !== null) {
+                    $data['progress'] = $progress;
+                }
+                $jsonLine = json_encode($data, JSON_UNESCAPED_UNICODE) . "\n";
+                fwrite($streamHandle, $jsonLine);
+                fflush($streamHandle);
+            }
+        }
+    }
+
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    fclose($streamHandle);
+
+    return proc_close($process);
+}
+
+/**
+ * Extract step/progress data from known output patterns.
+ */
+function extractProgress(string $line, string $taskId, \Kraftausdruck\Contracts\TaskProgressStoreInterface $store): ?float
+{
+    if (preg_match('/Processing step (\d+)\/(\d+)/', $line, $m)) {
+        $current = (int) $m[1];
+        $total = (int) $m[2];
+        $progress = round(($current / $total) * 100, 1);
+
+        $store->updateTask($taskId, [
+            'current_step' => $current,
+            'total_steps' => $total,
+            'progress' => $progress,
+            'message' => $line,
+        ]);
+
+        return $progress;
+    } elseif (preg_match('/Progress:\s*(\d+(?:\.\d+)?)%/', $line, $m)) {
+        $progress = (float) $m[1];
+
+        $store->updateTask($taskId, [
+            'progress' => $progress,
+            'message' => $line,
+        ]);
+
+        return $progress;
+    }
+
+    return null;
+}
+
+function detectLineType(string $message): string
+{
+    $lower = strtolower($message);
+
+    if (str_contains($lower, 'error') || str_contains($lower, 'failed') || str_contains($lower, '✗')) {
+        return 'error';
+    }
+
+    if (str_contains($lower, 'warning')) {
+        return 'warning';
+    }
+
+    if (str_contains($lower, 'success') || str_contains($lower, '✓')) {
+        return 'success';
+    }
+
+    return 'info';
+}
+
+function buildSakeCommand(string $basePath, string $targetTask, array $options): string
+{
+    $sake = 'php ' . $basePath . '/vendor/bin/sake';
+
+    $cmd = "{$sake} tasks:{$targetTask}";
+
+    foreach ($options as $key => $value) {
+        $cmd .= ' --' . $key . '=' . escapeshellarg((string) $value);
+    }
+
+    return $cmd;
+}

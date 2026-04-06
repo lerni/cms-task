@@ -31,9 +31,10 @@ class PsrCacheProgressStore implements TaskProgressStoreInterface
 
     private const TTL = 3600;
 
-    public function __construct()
+    public function __construct(?string $cacheDir = null)
     {
-        $psr6 = new FilesystemAdapter('BackgroundTasks', self::TTL, TEMP_PATH);
+        $cacheDir = $cacheDir ?? (defined('TEMP_PATH') ? TEMP_PATH : sys_get_temp_dir());
+        $psr6 = new FilesystemAdapter('BackgroundTasks', self::TTL, $cacheDir);
         $this->cache = new Psr16Cache($psr6);
         $this->streamDir = sys_get_temp_dir() . '/ss_background_tasks';
 

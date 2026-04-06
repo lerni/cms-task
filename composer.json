@@ -19,6 +19,9 @@
             "Kraftausdruck\\": "src/"
         }
     },
+    "bin": [
+        "bin/background-executor"
+    ],
     "extra": {
         "expose": [
             "client/dist"

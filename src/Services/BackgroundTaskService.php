@@ -12,12 +12,11 @@ use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 /**
  * Service for managing background task execution and progress tracking.
  *
- * Spawns BuildTasks as detached CLI processes via sake.
+ * Spawns BuildTasks as detached CLI processes via executor script.
  * Progress is tracked through a TaskProgressStore (PSR cache by default)
  * and delivered to the browser via stream files (read by the SSE endpoint).
  *
- * This service is the shared core consumed by BackgroundTaskField (CMS UI)
- * and future MCP server tools.
+ * This service is the shared core consumed by BackgroundTaskField (CMS UI).
  */
 class BackgroundTaskService
 {
@@ -179,19 +178,28 @@ class BackgroundTaskService
     }
 
     /**
-     * Spawn the BackgroundTaskExecutor as a detached CLI process.
+     * Spawn the background executor as a detached CLI process.
+     *
+     * Uses the standalone bin/background-executor script which only needs
+     * composer autoload — no Silverstripe bootstrap. The target task
+     * (invoked via sake) handles its own framework bootstrap.
      */
     private function spawnExecutor(string $taskName, array $options, string $taskId): ?string
     {
         $basePath = defined('BASE_PATH') ? BASE_PATH : (Environment::getEnv('SS_BASE_PATH') ?: getcwd());
-        $sakeBin = $basePath . '/vendor/bin/sake';
+        $cacheDir = defined('TEMP_PATH') ? TEMP_PATH : sys_get_temp_dir();
+
+        // Locate the executor script relative to this file (works for both
+        // local path modules and composer-installed packages)
+        $executorBin = dirname(__DIR__, 2) . '/bin/background-executor';
 
         $parts = [
             'php',
-            escapeshellarg($sakeBin),
-            'tasks:background-executor',
+            escapeshellarg($executorBin),
             '--target-task=' . escapeshellarg($taskName),
             '--task-id=' . escapeshellarg($taskId),
+            '--base-path=' . escapeshellarg($basePath),
+            '--cache-dir=' . escapeshellarg($cacheDir),
         ];
 
         if (!empty($options)) {

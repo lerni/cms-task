@@ -2,7 +2,7 @@
 
 STATUS: **POC**, basically working implementation - many ideas still floating.
 
-Background BuildTask execution with real-time progress for Silverstripe CMS.
+Silverstripe background BuildTask execution with real-time UI progress.
 
 Tasks run as **detached CLI processes** (via `sake`), so the browser never blocks. Progress is streamed in real-time through JSONL files read by an SSE endpoint. A PSR-16 cache stores task metadata for status recovery.
 
@@ -16,7 +16,7 @@ BackgroundTaskField  ──POST──▶  BackgroundTaskService
                                   └─ spawnExecutor() ──▶ detached CLI
                                                           │
 EventSource  ◀──SSE──  TaskStreamController               ▼
-  (tail-f read)          reads .stream file   ◀── BackgroundTaskExecutor
+  (tail-f read)          reads .stream file   ◀── bin/background-executor
                                                     writes JSONL per line
 ```
 
@@ -25,6 +25,8 @@ EventSource  ◀──SSE──  TaskStreamController               ▼
 ```
 cms-task/
 ├── _config/backgroundtasks.yml          # Injector bindings + Director routes
+├── bin/
+│   └── background-executor             # Standalone executor script (no SS bootstrap)
 ├── client/dist/
 │   ├── css/background-task-field.css    # CMS field styles
 │   └── js/background-task-field.js      # EventSource + fetch, event-delegated
@@ -44,7 +46,6 @@ cms-task/
 │   ├── Stores/
 │   │   └── PsrCacheProgressStore.php    # FilesystemAdapter cache + /tmp stream files
 │   └── Tasks/
-│       ├── BackgroundTaskExecutor.php   # Runs target task as subprocess, writes JSONL
 │       └── PingGoogleTask.php           # Demo task — pings google.com N times
 └── templates/
     └── Kraftausdruck/Fields/
@@ -63,15 +64,15 @@ Registered at `/task-stream/$TaskID`. Reads the JSONL stream file line-by-line (
 
 ### BackgroundTaskService
 
-Shared service for the task lifecycle. Resolves task command names to classes, spawns detached executors via `sake tasks:background-executor`, and manages the progress store.
+Shared service for the task lifecycle. Resolves task command names to classes, spawns the detached executor script, and manages the progress store.
 
 ### PsrCacheProgressStore
 
 Uses Symfony's `FilesystemAdapter` directly (bypasses Silverstripe's `CacheFactory` to ensure cache visibility across CLI and web processes). Stream files live at `/tmp/ss_background_tasks/`. The cache holds task metadata; the stream file is the real-time delivery channel.
 
-### BackgroundTaskExecutor
+### bin/background-executor
 
-A BuildTask that runs another BuildTask as a subprocess via `proc_open`. Captures stdout line-by-line, writes JSONL to the stream file, and extracts progress from output patterns like `Processing step X/Y`.
+Standalone PHP script that runs a BuildTask as a subprocess via `sake` + `proc_open`. Captures stdout line-by-line, writes JSONL to the stream file, and extracts progress from output patterns like `Processing step X/Y`. Does not boot Silverstripe — only needs composer autoload and the `PsrCacheProgressStore` class.
 
 ## Usage
 
