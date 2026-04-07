@@ -63,6 +63,9 @@ class TaskStreamController extends Controller
             return;
         }
 
+        // SSE is a long-lived request — disable PHP's execution time limit
+        set_time_limit(0);
+
         // Disable all output buffering
         while (ob_get_level()) {
             ob_end_clean();

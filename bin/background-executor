@@ -233,7 +233,7 @@ function detectLineType(string $message): string
 
 function buildSakeCommand(string $basePath, string $targetTask, array $options): string
 {
-    $sake = 'php ' . $basePath . '/vendor/bin/sake';
+    $sake = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($basePath . '/vendor/bin/sake');
 
     $cmd = "{$sake} tasks:{$targetTask}";
 

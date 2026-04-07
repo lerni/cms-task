@@ -6,6 +6,7 @@ use SilverStripe\Dev\BuildTask;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Core\Environment;
 use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Injector\Injectable;
 use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 
@@ -21,6 +22,19 @@ use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 class BackgroundTaskService
 {
     use Injectable;
+    use Configurable;
+
+    /**
+     * Absolute path to the CLI PHP binary (fallback if SS_PHP_CLI_BINARY env var is not set).
+     * Required on LiteSpeed or non-standard hosting where PHP_BINARY
+     * doesn't point to a usable CLI binary and 'php' isn't in PATH.
+     *
+     * Prefer setting the SS_PHP_CLI_BINARY environment variable in .env instead,
+     * as the path typically differs per environment.
+     *
+     * Example: '/usr/local/bin/php84'
+     */
+    private static string $php_binary = '';
 
     private TaskProgressStoreInterface $store;
 
@@ -194,7 +208,7 @@ class BackgroundTaskService
         $executorBin = dirname(__DIR__, 2) . '/bin/background-executor';
 
         $parts = [
-            'php',
+            escapeshellarg($this->getCliPhpBinary()),
             escapeshellarg($executorBin),
             '--target-task=' . escapeshellarg($taskName),
             '--task-id=' . escapeshellarg($taskId),
@@ -208,8 +222,15 @@ class BackgroundTaskService
 
         $command = implode(' ', $parts);
 
+        // Ensure the log/stream directory exists before nohup tries to redirect there
+        $logDir = rtrim($cacheDir, '/') . '/ss_background_tasks';
+        if (!is_dir($logDir)) {
+            mkdir($logDir, 0750, true);
+        }
+        $logFile = $logDir . '/executor.log';
+
         if (function_exists('exec')) {
-            return $this->startWithExec($command);
+            return $this->startWithExec($command, $logFile);
         }
 
         if (function_exists('proc_open')) {
@@ -222,9 +243,9 @@ class BackgroundTaskService
         return null;
     }
 
-    private function startWithExec(string $command): ?string
+    private function startWithExec(string $command, string $logFile): ?string
     {
-        $full = 'nohup ' . $command . ' > /dev/null 2>&1 & echo $!';
+        $full = 'nohup ' . $command . ' >> ' . escapeshellarg($logFile) . ' 2>&1 & echo $!';
         $output = [];
         exec($full, $output);
 
@@ -268,5 +289,35 @@ class BackgroundTaskService
         }
 
         return $rc === 0;
+    }
+
+    /**
+     * Resolve the CLI PHP binary path.
+     *
+     * PHP_BINARY points to the FPM binary when running under php-fpm,
+     * which cannot execute CLI scripts. Try the matching CLI binary first,
+     * fall back to 'php' in PATH.
+     */
+    private function getCliPhpBinary(): string
+    {
+        // Env var (per-environment .env) > YAML config > auto-detect
+        $binary = Environment::getEnv('SS_PHP_CLI_BINARY')
+            ?: static::config()->get('php_binary');
+
+        if ($binary) {
+            return $binary;
+        }
+
+        if (PHP_SAPI === 'cli') {
+            return PHP_BINARY;
+        }
+
+        // FPM: derive CLI path (e.g. /usr/sbin/php-fpm8.4 → /usr/bin/php8.4)
+        $cliBinary = preg_replace('#/php-fpm#', '/php', str_replace('/sbin/', '/bin/', PHP_BINARY));
+        if ($cliBinary && $cliBinary !== PHP_BINARY) {
+            return $cliBinary;
+        }
+
+        return 'php';
     }
 }

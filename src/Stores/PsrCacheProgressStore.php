@@ -36,7 +36,7 @@ class PsrCacheProgressStore implements TaskProgressStoreInterface
         $cacheDir = $cacheDir ?? (defined('TEMP_PATH') ? TEMP_PATH : sys_get_temp_dir());
         $psr6 = new FilesystemAdapter('BackgroundTasks', self::TTL, $cacheDir);
         $this->cache = new Psr16Cache($psr6);
-        $this->streamDir = sys_get_temp_dir() . '/ss_background_tasks';
+        $this->streamDir = rtrim($cacheDir, '/') . '/ss_background_tasks';
 
         if (!is_dir($this->streamDir)) {
             mkdir($this->streamDir, 0750, true);
