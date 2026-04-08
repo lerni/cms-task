@@ -131,6 +131,19 @@ class TaskStreamController extends Controller
                 // EOF — check if task finished
                 $meta = $store->getTask($taskId);
                 if ($meta && !empty($meta['completed'])) {
+                    // Drain any remaining stream content written between
+                    // the last fgets (EOF) and the completed flag being set.
+                    // This handles block-buffered subprocesses that flush
+                    // all output at exit right before marking completion.
+                    fseek($handle, ftell($handle));
+                    while (($remaining = fgets($handle)) !== false) {
+                        $position = ftell($handle);
+                        echo "id: {$position}\n";
+                        echo "event: output\n";
+                        echo 'data: ' . trim($remaining) . "\n\n";
+                        $this->flushWithPadding();
+                    }
+
                     $this->sendEvent('finished', $meta);
 
                     break;

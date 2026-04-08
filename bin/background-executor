@@ -233,7 +233,11 @@ function detectLineType(string $message): string
 
 function buildSakeCommand(string $basePath, string $targetTask, array $options): string
 {
-    $sake = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($basePath . '/vendor/bin/sake');
+    // Disable output buffering so lines stream in real-time through the pipe
+    // instead of being held until the subprocess exits (default when stdout is not a TTY)
+    $sake = escapeshellarg(PHP_BINARY)
+        . ' -d output_buffering=Off -d implicit_flush=1'
+        . ' ' . escapeshellarg($basePath . '/vendor/bin/sake');
 
     $cmd = "{$sake} tasks:{$targetTask}";
 
