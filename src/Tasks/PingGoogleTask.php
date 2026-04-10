@@ -19,6 +19,18 @@ class PingGoogleTask extends BuildTask
 
     protected static string $commandName = 'ping-google';
 
+    /**
+     * Common fallback locations for environments where ping is not on PATH.
+     *
+     * @var list<string>
+     */
+    private const PING_BINARY_FALLBACKS = [
+        '/sbin/ping',
+        '/usr/sbin/ping',
+        '/bin/ping',
+        '/usr/bin/ping',
+    ];
+
     public function getOptions(): array
     {
         return [
@@ -96,18 +108,32 @@ class PingGoogleTask extends BuildTask
     }
 
     /**
-     * Ping a host and return result
+     * Ping a host and return result.
+     *
+     * @return array<string, mixed>
      */
     private function pingHost(string $host): array
     {
         try {
-            // Use different ping commands based on OS
-            $isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+            $ping = $this->resolvePingBinary();
 
-            if ($isWindows) {
-                $command = "ping -n 1 {$host}";
+            if ($ping === null) {
+                return [
+                    'success' => false,
+                    'error' => 'No ping binary found on PATH or in common locations.',
+                ];
+            }
+
+            $osFamily = PHP_OS_FAMILY;
+            $escapedPing = escapeshellarg($ping);
+            $escapedHost = escapeshellarg($host);
+
+            if ($osFamily === 'Windows') {
+                $command = "{$escapedPing} -n 1 {$escapedHost}";
+            } elseif ($osFamily === 'Linux') {
+                $command = "{$escapedPing} -c 1 -W 5 {$escapedHost}";
             } else {
-                $command = "ping -c 1 -W 5 {$host}";
+                $command = "{$escapedPing} -c 1 {$escapedHost}";
             }
 
             $output = [];
@@ -132,5 +158,20 @@ class PingGoogleTask extends BuildTask
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function resolvePingBinary(): ?string
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            return 'ping';
+        }
+
+        foreach (self::PING_BINARY_FALLBACKS as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+
+        return null;
     }
 }
