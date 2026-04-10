@@ -222,7 +222,7 @@ class BackgroundTaskService
 
         $command = implode(' ', $parts);
 
-        // Ensure the log/stream directory exists before nohup tries to redirect there
+        // Ensure the log directory exists before the detached exec path redirects there
         $logDir = rtrim($cacheDir, '/') . '/ss_background_tasks';
         if (!is_dir($logDir)) {
             mkdir($logDir, 0750, true);
@@ -245,7 +245,7 @@ class BackgroundTaskService
 
     private function startWithExec(string $command, string $logFile): ?string
     {
-        $full = 'nohup ' . $command . ' >> ' . escapeshellarg($logFile) . ' 2>&1 & echo $!';
+        $full = $command . ' >> ' . escapeshellarg($logFile) . ' 2>&1 & echo $!';
         $output = [];
         exec($full, $output);
 
