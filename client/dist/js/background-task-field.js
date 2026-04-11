@@ -270,8 +270,9 @@
     line.textContent = message;
     container.appendChild(line);
 
-    // Auto-scroll
-    container.scrollTop = container.scrollHeight;
+    // Auto-scroll the scrollable parent
+    var scrollable = field.querySelector('.background-task-field__log');
+    if (scrollable) scrollable.scrollTop = scrollable.scrollHeight;
   }
 
   function clearLog(field) {
