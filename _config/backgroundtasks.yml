@@ -7,6 +7,14 @@ SilverStripe\Core\Injector\Injector:
   Kraftausdruck\Contracts\TaskProgressStoreInterface:
     class: Kraftausdruck\Stores\PsrCacheProgressStore
 
+# Optional: bind a PSR-14 event dispatcher to observe task lifecycle events
+# (TaskStarted, TaskStartThrottled). Without a binding these events are
+# silently dropped (no-op) — the module works fine with zero listeners.
+# A consumer (e.g. a future MCP server) provides the dispatcher:
+#
+#   Psr\EventDispatcher\EventDispatcherInterface:
+#     class: Your\App\YourEventDispatcher
+
 ---
 Name: cms-task-routes
 Before: 'modelascontrollercatchallroute'

@@ -47,8 +47,7 @@ cms-task/
 │   ├── Stores/
 │   │   └── PsrCacheProgressStore.php    # FilesystemAdapter cache + /tmp stream files
 │   └── Tasks/
-│       ├── PingGoogleTask.php           # Demo task — pings google.com N times
-│       └── ProgressTrackingOutput.php   # PolyOutput decorator for stream writing
+│       └── PingGoogleTask.php           # Demo task — pings google.com N times
 └── templates/
     └── Kraftausdruck/Fields/
         └── BackgroundTaskField.ss       # Field template with data attributes
@@ -111,7 +110,49 @@ The scope key also determines **visibility across users**. A scope like `Page_42
 
 Without a scope key, dedup and recovery match on the command name alone.
 
-A demo admin is available at `/admin/task-runner` via `TaskRunnerAdmin`.
+### Rate limiting
+
+`BackgroundTaskService` rate-limits fresh task spawns to prevent rapid restart cycles after a task completes. The limit is keyed on `commandName + scopeKey`, so it shares the **same knob** as dedup and recovery:
+
+| Scope key | Rate limit scope |
+|---|---|
+| `null` (default) | global per command — one budget for all users |
+| `'my-command'` (fixed string) | global — same as above |
+| `'my-command_Member_42'` (includes user) | per-user — each member gets their own budget |
+
+Default: **1 fresh spawn per 2 minutes** per scope. Configure globally via YAML:
+
+```yaml
+Kraftausdruck\Services\BackgroundTaskService:
+  start_rate_limit: 1  # max fresh spawns per window (0 = disabled)
+  start_rate_decay: 2  # window length in minutes
+```
+
+Programmatic callers can override per call by passing `$rateLimitMaxAttempts` / `$rateLimitDecay` to `BackgroundTaskService::startBackgroundTask()`.
+
+**Important:** reconnecting to an already-running task does not touch the rate limiter at all. The field calls `findActiveTask()` and returns the existing task **before** the service's limiter runs, so the limiter only ever gates genuine fresh spawns. Because the limit lives in the service, it also covers programmatic callers (not just the CMS field).
+
+### Lifecycle events (PSR-14)
+
+The service emits two FPM-side events through an **optional** PSR-14 dispatcher:
+
+- `Kraftausdruck\Events\TaskStarted` — a fresh spawn was confirmed.
+- `Kraftausdruck\Events\TaskStartThrottled` — a start was rejected by the rate limiter (carries `retryAfter`).
+
+Both are serializable value objects (scalars/IDs only). If no `Psr\EventDispatcher\EventDispatcherInterface` is bound in the Injector, dispatch is a **no-op** — the module needs no listeners to function. Bind a dispatcher to observe throttling (e.g. from a future MCP server):
+
+```yaml
+SilverStripe\Core\Injector\Injector:
+  Psr\EventDispatcher\EventDispatcherInterface:
+    class: Your\App\YourEventDispatcher
+```
+
+A demo admin is available at `/admin/task-runner` via `TaskRunnerAdmin`. It'll be removed as we approach a stable release. Meantime it can be hidden:
+
+```yaml
+Kraftausdruck\Admin\TaskRunnerAdmin:
+  ignore_menuitem: true
+```
 
 ## Installation
 
@@ -122,25 +163,16 @@ sake db:build --flush
 
 ## PHP CLI Binary
 
-Tasks run as detached CLI processes via `sake`. By default, Silverstripe uses `PHP_BINARY` to locate the PHP executable. If your CLI PHP differs from the web server's PHP, you **must** set `SS_PHP_CLI_BINARY` in your `.env`:
+Tasks run as detached CLI processes via `sake`. Silverstripe uses `PHP_BINARY` to locate the PHP executable. By default, the module will attempt to automatically detect it. However, if the correct binary isn't in the web server's `$PATH`, you can explicitly define it:
 
 ```dotenv
-SS_PHP_CLI_BINARY="/Applications/MAMP/bin/php/php8.4.2/bin/php"
+SS_PHP_CLI_BINARY="/usr/bin/php"
 ```
 
 **It is crucial that the CLI binary runs the same PHP version as your web server.** Mismatched versions can cause subtle errors — different extensions loaded, different behaviour, or outright failures.
-
-To verify your configuration:
-
-```bash
-# Check which PHP the web server reports (visit /dev or phpinfo)
-# Then compare with CLI:
-/Applications/MAMP/bin/php/php8.4.2/bin/php -v
-```
-
-The version output should match what your web server uses.
 
 ## Requirements
 
 - Silverstripe Framework ^6
 - Silverstripe Admin ^3
+- psr/event-dispatcher ^1 (implicit)

@@ -29,6 +29,10 @@
   color: #495057;
 }
 
+.background-task-field__status[data-status="idle"] {
+  display: none;
+}
+
 .background-task-field__status[data-status="running"] {
   background: #cce5ff;
   color: #004085;

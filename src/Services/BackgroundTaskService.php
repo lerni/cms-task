@@ -5,9 +5,14 @@ namespace Kraftausdruck\Services;
 use SilverStripe\Dev\BuildTask;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Core\Environment;
+use Kraftausdruck\Events\TaskStarted;
+use SilverStripe\Core\Cache\RateLimiter;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Injector\Injectable;
+use Kraftausdruck\Events\TaskStartThrottled;
+use Psr\EventDispatcher\EventDispatcherInterface;
+use Kraftausdruck\Exceptions\TaskRateLimitException;
 use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 
 /**
@@ -36,6 +41,17 @@ class BackgroundTaskService
      */
     private static string $php_binary = '';
 
+    /**
+     * Maximum number of fresh task spawns within the rate-limit window.
+     * Set to 0 to disable rate limiting. Applied per command+scope.
+     */
+    private static int $start_rate_limit = 1;
+
+    /**
+     * Rate-limit window in minutes.
+     */
+    private static int $start_rate_decay = 2;
+
     private TaskProgressStoreInterface $store;
 
     public function __construct()
@@ -51,7 +67,10 @@ class BackgroundTaskService
      * @param string|null $taskId Custom task ID (auto-generated if null)
      * @param int|null $memberId ID of the Member who initiated the task
      * @param string|null $scopeKey Opaque key for recovery/dedup scoping
+     * @param int|null $rateLimitMaxAttempts Override fresh spawns per window (0 = disabled)
+     * @param int|null $rateLimitDecay Override rate-limit window in minutes
      * @return array{task_id: string, process_id: ?string, status: string} Task metadata
+     * @throws TaskRateLimitException When a fresh spawn is blocked by the rate limiter
      */
     public function startBackgroundTask(
         string $taskName,
@@ -59,7 +78,23 @@ class BackgroundTaskService
         ?string $taskId = null,
         ?int $memberId = null,
         ?string $scopeKey = null,
+        ?int $rateLimitMaxAttempts = null,
+        ?int $rateLimitDecay = null,
     ): array {
+        // Rate limiting — keyed on command + scope, the SAME knob as dedup and
+        // recovery (which also match on commandName + scopeKey). One control for
+        // both: a null/coarse scope = one global budget shared by all users; a
+        // scope that includes a member/record id becomes per-user/per-record
+        // automatically. Callers must dedup (findActiveTask) BEFORE calling this
+        // so reconnects never reach the limiter — only genuine fresh spawns do.
+        $rateLimiter = $this->buildStartRateLimiter($taskName, $scopeKey, $rateLimitMaxAttempts, $rateLimitDecay);
+        if ($rateLimiter && !$rateLimiter->canAccess()) {
+            $retryAfter = (int) $rateLimiter->getTimeToReset();
+            $this->dispatchEvent(new TaskStartThrottled($taskName, $scopeKey, $memberId, $retryAfter, time()));
+
+            throw new TaskRateLimitException($retryAfter);
+        }
+
         if (!$taskId) {
             $taskId = 'task_' . bin2hex(random_bytes(12));
         }
@@ -88,6 +123,9 @@ class BackgroundTaskService
         $this->store->initTask($taskId, $metadata);
         $this->store->addToActiveIndex($taskId);
 
+        // Consume one rate-limit slot — fresh spawn confirmed.
+        $rateLimiter?->hit();
+
         // Spawn detached CLI process
         $processId = $this->spawnExecutor($taskName, $options, $taskId);
         if ($processId) {
@@ -95,7 +133,46 @@ class BackgroundTaskService
             $metadata['process_id'] = $processId;
         }
 
+        $this->dispatchEvent(new TaskStarted($taskId, $taskName, $scopeKey, $memberId, $metadata['started_at']));
+
         return $metadata;
+    }
+
+    /**
+     * Build the rate limiter for fresh task spawns, or null when disabled.
+     * Keyed on commandName + scopeKey (same granularity as dedup/recovery).
+     */
+    private function buildStartRateLimiter(
+        string $taskName,
+        ?string $scopeKey,
+        ?int $maxAttempts,
+        ?int $decayMinutes,
+    ): ?RateLimiter {
+        $maxAttempts ??= (int) static::config()->get('start_rate_limit');
+        $decayMinutes ??= (int) static::config()->get('start_rate_decay');
+
+        if ($maxAttempts <= 0 || $decayMinutes <= 0) {
+            return null;
+        }
+
+        return new RateLimiter(
+            'cms-task-start-' . md5($taskName . ($scopeKey ?? '')),
+            $maxAttempts,
+            $decayMinutes,
+        );
+    }
+
+    /**
+     * Dispatch a lifecycle event through an optional PSR-14 dispatcher.
+     * No-op when no EventDispatcherInterface is bound in the Injector.
+     */
+    private function dispatchEvent(object $event): void
+    {
+        if (!Injector::inst()->has(EventDispatcherInterface::class)) {
+            return;
+        }
+
+        Injector::inst()->get(EventDispatcherInterface::class)->dispatch($event);
     }
 
     /**

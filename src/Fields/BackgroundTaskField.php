@@ -13,6 +13,7 @@ use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Security\SecurityToken;
 use Kraftausdruck\Services\BackgroundTaskService;
+use Kraftausdruck\Exceptions\TaskRateLimitException;
 
 /**
  * A self-contained FormField for starting, monitoring, and stopping
@@ -151,7 +152,9 @@ class BackgroundTaskField extends FormField
             /** @var BackgroundTaskService $service */
             $service = Injector::inst()->get(BackgroundTaskService::class);
 
-            // Return existing task if one is already active for this command + scope
+            // Return existing task if one is already active for this command + scope.
+            // Dedup runs BEFORE the rate limiter (which lives in the service and
+            // only gates genuine fresh spawns) — reconnecting is always free.
             $existing = $service->findActiveTask($this->taskCommandName, $this->scopeKey);
             if ($existing) {
                 $response->setBody(json_encode([
@@ -174,6 +177,14 @@ class BackgroundTaskField extends FormField
             $response->setBody(json_encode([
                 'success' => true,
                 'taskId' => $meta['task_id'],
+            ]));
+        } catch (TaskRateLimitException $e) {
+            $response->setStatusCode(429);
+            $response->addHeader('Retry-After', (string) $e->retryAfter);
+            $response->setBody(json_encode([
+                'success' => false,
+                'message' => 'Too many start requests. Please wait before retrying.',
+                'retry_after' => $e->retryAfter,
             ]));
         } catch (\Exception $e) {
             $response->setStatusCode(500);
