@@ -18,7 +18,8 @@ BackgroundTaskField  ──POST──▶  BackgroundTaskService
                                                           │
 EventSource  ◀──SSE──  TaskStreamController               ▼
   (tail-f read)          reads .stream file   ◀── bin/background-executor
-                                                    writes JSONL per line
+  ← event: output                                  writes JSONL per line
+  ← event: task_ended  ◀── decoded + PSR-14        writes {"type":"__cms_task_ended",...} at exit
 ```
 
 ## File overview
@@ -38,6 +39,11 @@ cms-task/
 │   │   └── TaskProgressStoreInterface.php  # Storage abstraction
 │   ├── Controller/
 │   │   └── TaskStreamController.php     # SSE endpoint at /task-stream/{TaskID}
+│   ├── Events/
+│   │   ├── TaskEnded.php               # Terminal event (CLI→FPM wire + PSR-14)
+│   │   ├── TaskStarted.php             # Fresh spawn confirmed (FPM side)
+│   │   ├── TaskStartThrottled.php      # Start rejected by rate limiter (FPM side)
+│   │   └── TaskEvent.php              # Serialization contract (toArray/fromArray)
 │   ├── Fields/
 │   │   └── BackgroundTaskField.php      # Self-contained FormField (start/stop)
 │   ├── Models/
@@ -134,18 +140,59 @@ Programmatic callers can override per call by passing `$rateLimitMaxAttempts` / 
 
 ### Lifecycle events (PSR-14)
 
-The service emits two FPM-side events through an **optional** PSR-14 dispatcher:
+The module emits serializable value objects at key lifecycle points. Events are dispatched through an **optional** PSR-14 `EventDispatcherInterface` — if none is bound in the Injector, dispatch is a **no-op**.
+
+#### FPM-side events (dispatched by `BackgroundTaskService`)
 
 - `Kraftausdruck\Events\TaskStarted` — a fresh spawn was confirmed.
 - `Kraftausdruck\Events\TaskStartThrottled` — a start was rejected by the rate limiter (carries `retryAfter`).
 
-Both are serializable value objects (scalars/IDs only). If no `Psr\EventDispatcher\EventDispatcherInterface` is bound in the Injector, dispatch is a **no-op** — the module needs no listeners to function. Bind a dispatcher to observe throttling (e.g. from a future MCP server):
+#### Terminal event — crosses the process boundary via the JSONL stream
+
+- `Kraftausdruck\Events\TaskEnded` — the subprocess exited. `reason` is `completed`, `failed`, or `aborted`.
+
+`bin/background-executor` writes `{"type":"__cms_task_ended","data":{...}}` as the **last line** of the stream file when the subprocess exits (in a `finally` block, so it fires on completion, failure, and uncaught exception). It writes this terminal line **before** flipping the cache `completed` flag, so a connected reader always sees `task_ended` rather than racing the `finished` fallback. `TaskStreamController` reads that line, sends it to the browser as `event: task_ended`, and replays it locally through PSR-14.
+
+> **Reserved type:** `__cms_task_ended` is a reserved control sentinel on the stream. Don't emit a JSONL line with that `type` from your own task output (see below) — the reader treats it as the terminal event and stops streaming. Use any other `type` (e.g. `progress`, `result`).
+
+> **Note:** the FPM-side `TaskEnded` dispatch only fires when a reader (browser EventSource or MCP server) is connected to the SSE stream at the time the task ends. For headless callers, poll `BackgroundTaskService::getTask($taskId)['completed']` instead.
+
+#### Structured task output (`--format=json`)
+
+If a task prints a JSONL line carrying a `type` key (e.g. `{"type":"progress","current":3,"total":17}`), the executor forwards it to the stream **verbatim** instead of wrapping it as a text line. This is the channel an `--format=json` task uses to emit structured progress for an MCP client. Note that such lines bypass the executor's `Processing step X/Y` / `Progress: XX%` text scraping, so they do **not** update the `progress`/`message` fields in the cache metadata — they reach readers via the SSE stream only. A client polling `getTask()` for `progress` won't see updates from json-mode tasks; watch the stream (or `completed`) instead.
+
+#### Wiring a listener
+
+`symfony/event-dispatcher` is already in the dependency tree via `silverstripe/framework`. Bind it and register listeners via YAML:
 
 ```yaml
 SilverStripe\Core\Injector\Injector:
   Psr\EventDispatcher\EventDispatcherInterface:
-    class: Your\App\YourEventDispatcher
+    class: Symfony\Component\EventDispatcher\EventDispatcher
+    calls:
+      - [addListener, ['Kraftausdruck\Events\TaskEnded', '%$App\TaskEndedListener']]
 ```
+
+```php
+// app/src/TaskEndedListener.php
+class TaskEndedListener
+{
+    public function __invoke(TaskEnded $event): void
+    {
+        if ($event->commandName !== 'my-command') {
+            return;
+        }
+
+        if ($event->reason !== 'completed') {
+            return;
+        }
+
+        // do the other thing
+    }
+}
+```
+
+All event classes are **serializable value objects** (scalars/IDs only — no live objects, no closures) and implement `TaskEvent` (`toArray()` / `fromArray()` / `WIRE_VERSION`).
 
 A demo admin is available at `/admin/task-runner` via `TaskRunnerAdmin`. It'll be removed as we approach a stable release. Meantime it can be hidden:
 

@@ -6,6 +6,8 @@ use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Security\Permission;
 use SilverStripe\Core\Injector\Injector;
+use Kraftausdruck\Events\TaskEnded;
+use Psr\EventDispatcher\EventDispatcherInterface;
 use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 
 /**
@@ -121,14 +123,26 @@ class TaskStreamController extends Controller
             $line = fgets($handle);
 
             if ($line !== false) {
-                // Data available — send immediately, no delay
                 $position = ftell($handle);
+                $trimmed = trim($line);
+
+                // Detect terminal event line written by bin/background-executor
+                $decoded = json_decode($trimmed, true);
+                if (is_array($decoded) && ($decoded['type'] ?? null) === '__cms_task_ended' && isset($decoded['data'])) {
+                    echo "id: {$position}\n";
+                    $this->sendEvent('task_ended', $decoded['data']);
+                    $this->dispatchTaskEnded($decoded['data']);
+
+                    break;
+                }
+
+                // Regular output line — forward as-is
                 echo "id: {$position}\n";
                 echo "event: output\n";
-                echo 'data: ' . trim($line) . "\n\n";
+                echo 'data: ' . $trimmed . "\n\n";
                 $this->flushWithPadding();
             } else {
-                // EOF — check if task finished
+                // EOF — fallback for hard crash / kill-9 (no terminal line was written)
                 $meta = $store->getTask($taskId);
                 if ($meta && !empty($meta['completed'])) {
                     $this->sendEvent('finished', $meta);
@@ -150,6 +164,20 @@ class TaskStreamController extends Controller
 
         // Must exit to prevent Silverstripe from sending additional response data
         exit();
+    }
+
+    /**
+     * Replay a decoded terminal event locally through the optional PSR-14 dispatcher.
+     *
+     * @param array<string, mixed> $data Decoded `data` payload from the terminal JSONL line.
+     */
+    private function dispatchTaskEnded(array $data): void
+    {
+        if (!Injector::inst()->has(EventDispatcherInterface::class)) {
+            return;
+        }
+
+        Injector::inst()->get(EventDispatcherInterface::class)->dispatch(TaskEnded::fromArray($data));
     }
 
     private function sendEvent(string $event, array $data): void

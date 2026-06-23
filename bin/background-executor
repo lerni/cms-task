@@ -39,21 +39,6 @@ if (!$autoloaded) {
     exit(1);
 }
 
-// When running as a local path module (not composer-installed), the module's
-// own namespace may not be in the project's autoload map. Register it manually.
-$moduleDir = dirname(__DIR__);
-spl_autoload_register(function (string $class) use ($moduleDir): void {
-    $prefix = 'Kraftausdruck\\';
-    if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
-        return;
-    }
-    $relative = substr($class, strlen($prefix));
-    $file = $moduleDir . '/src/' . str_replace('\\', '/', $relative) . '.php';
-    if (file_exists($file)) {
-        require $file;
-    }
-});
-
 // Parse CLI options
 $options = getopt('', [
     'target-task:',
@@ -77,6 +62,10 @@ if (!$targetTask || !$taskId || !$basePath) {
 // Instantiate progress store directly — no Injector, no framework
 $store = new \Kraftausdruck\Stores\PsrCacheProgressStore($cacheDir);
 
+$exitCode = null;
+$reason = 'aborted';
+$message = null;
+
 try {
     $store->updateTask($taskId, [
         'status' => 'running',
@@ -86,26 +75,31 @@ try {
     $sakeCommand = buildSakeCommand($basePath, $targetTask, $taskOptions);
     $exitCode = runAndStream($sakeCommand, $taskId, $store);
 
-    $finalStatus = $exitCode === 0 ? 'completed' : 'failed';
+    $reason = $exitCode === 0 ? 'completed' : 'failed';
+    $message = $exitCode === 0 ? 'Task completed successfully' : 'Task failed';
+} catch (\Throwable $e) {
+    $reason = 'aborted';
+    $message = $e->getMessage();
+    fwrite(STDERR, "Execution failed: {$e->getMessage()}\n");
+} finally {
+    // Write the terminal JSONL line FIRST so any connected reader (browser
+    // EventSource / MCP) observes task_ended before the completed flag flips.
+    writeTerminalLine($store, $taskId, $targetTask, $reason, $exitCode);
+
+    // Mark the task finished in the cache LAST. The SSE reader checks this
+    // flag at EOF as a hard-crash fallback; flipping it after the terminal
+    // line closes the race where the reader could see completed=true and
+    // break before reading (and replaying) the terminal line.
     $store->updateTask($taskId, [
-        'status' => $finalStatus,
+        'status' => $reason === 'completed' ? 'completed' : 'failed',
         'exit_code' => $exitCode,
         'completed' => true,
-        'message' => $exitCode === 0 ? 'Task completed successfully' : 'Task failed',
+        'message' => $message,
     ]);
     $store->removeFromActiveIndex($taskId);
-
-    exit($exitCode === 0 ? 0 : 1);
-} catch (\Throwable $e) {
-    $store->updateTask($taskId, [
-        'status' => 'failed',
-        'completed' => true,
-        'message' => $e->getMessage(),
-    ]);
-    $store->removeFromActiveIndex($taskId);
-    fwrite(STDERR, "Execution failed: {$e->getMessage()}\n");
-    exit(1);
 }
+
+exit($exitCode === 0 ? 0 : 1);
 
 /**
  * Run the sake subprocess and stream its stdout to the JSONL stream file.
@@ -155,6 +149,16 @@ function runAndStream(string $command, string $taskId, \Kraftausdruck\Contracts\
                 }
 
                 $clean = preg_replace('/\e\[[0-9;]*m/', '', $line);
+
+                // If the task emits structured JSONL (e.g. --format=json), pass through as-is
+                $decoded = json_decode($clean, true);
+                if (is_array($decoded) && isset($decoded['type'])) {
+                    $jsonLine = json_encode($decoded, JSON_UNESCAPED_UNICODE) . "\n";
+                    fwrite($streamHandle, $jsonLine);
+                    fflush($streamHandle);
+
+                    continue;
+                }
 
                 $progress = extractProgress($clean, $taskId, $store);
 
@@ -229,6 +233,31 @@ function detectLineType(string $message): string
     }
 
     return 'info';
+}
+
+/**
+ * Write the terminal JSONL line to the stream file.
+ * Called from the finally block so it fires on completion, failure, and abort.
+ */
+function writeTerminalLine(
+    \Kraftausdruck\Contracts\TaskProgressStoreInterface $store,
+    string $taskId,
+    string $commandName,
+    string $reason,
+    ?int $exitCode,
+): void {
+    $meta = $store->getTask($taskId) ?? [];
+    $event = new \Kraftausdruck\Events\TaskEnded(
+        $taskId,
+        $commandName,
+        $meta['scope_key'] ?? null,
+        isset($meta['member_id']) ? (int) $meta['member_id'] : null,
+        $reason,
+        time(),
+        $exitCode,
+    );
+    $line = json_encode(['type' => '__cms_task_ended', 'data' => $event->toArray()], JSON_UNESCAPED_UNICODE) . "\n";
+    file_put_contents($store->getStreamFilePath($taskId), $line, FILE_APPEND | LOCK_EX);
 }
 
 function buildSakeCommand(string $basePath, string $targetTask, array $options): string

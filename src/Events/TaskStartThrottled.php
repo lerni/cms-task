@@ -35,7 +35,7 @@ final class TaskStartThrottled implements TaskEvent
 
     public static function fromArray(array $data): static
     {
-        return new self(
+        return new static(
             (string) $data['command_name'],
             isset($data['scope_key']) ? (string) $data['scope_key'] : null,
             isset($data['member_id']) ? (int) $data['member_id'] : null,

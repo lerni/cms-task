@@ -48,6 +48,13 @@ class PingGoogleTask extends BuildTask
                 'Delay between pings in seconds (default: 1)',
                 1,
             ),
+            new InputOption(
+                'format',
+                null,
+                InputOption::VALUE_OPTIONAL,
+                'Output format: text (default) or json (structured JSONL per line)',
+                'text',
+            ),
         ];
     }
 
@@ -55,17 +62,18 @@ class PingGoogleTask extends BuildTask
     {
         $count = (int) $input->getOption('count');
         $delay = (int) $input->getOption('delay');
+        $format = (string) $input->getOption('format');
+        $jsonMode = $format === 'json';
 
-        $output->writeln("<info>Starting to ping google.com {$count} times with {$delay}s delay...</info>");
-        $output->writeln('');
+        if (!$jsonMode) {
+            $output->writeln("<info>Starting to ping google.com {$count} times with {$delay}s delay...</info>");
+            $output->writeln('');
+        }
 
         $successCount = 0;
         $failCount = 0;
 
         for ($i = 1; $i <= $count; $i++) {
-            $output->write("Ping {$i}/{$count}: ");
-
-            // Execute ping command
             $startTime = microtime(true);
             $result = $this->pingHost('google.com');
             $endTime = microtime(true);
@@ -73,36 +81,57 @@ class PingGoogleTask extends BuildTask
 
             if ($result['success']) {
                 $successCount++;
-                $output->writeln("<info>✓ Success ({$responseTime}ms)</info>");
+                if ($jsonMode) {
+                    $output->writeln(json_encode(['type' => 'progress', 'current' => $i, 'total' => $count, 'ms' => $responseTime]));
+                } else {
+                    $output->write("Ping {$i}/{$count}: ");
+                    $output->writeln("<info>✓ Success ({$responseTime}ms)</info>");
+                }
             } else {
                 $failCount++;
-                $output->writeln("<error>✗ Failed - {$result['error']}</error>");
+                if ($jsonMode) {
+                    $output->writeln(json_encode(['type' => 'progress', 'current' => $i, 'total' => $count, 'error' => $result['error']]));
+                } else {
+                    $output->write("Ping {$i}/{$count}: ");
+                    $output->writeln("<error>✗ Failed - {$result['error']}</error>");
+                }
             }
 
-            // Show progress
-            $progress = round(($i / $count) * 100, 1);
-            $output->writeln("<comment>Progress: {$progress}% ({$i}/{$count})</comment>");
+            // Show progress (text mode only — json mode already emits per-ping progress above)
+            if (!$jsonMode) {
+                $progress = round(($i / $count) * 100, 1);
+                $output->writeln("<comment>Progress: {$progress}% ({$i}/{$count})</comment>");
+            }
 
             // Add delay between pings (except for the last one)
             if ($i < $count && $delay > 0) {
-                $output->writeln("Waiting {$delay}s...");
+                if (!$jsonMode) {
+                    $output->writeln("Waiting {$delay}s...");
+                }
+
                 sleep($delay);
             }
 
-            $output->writeln('');
+            if (!$jsonMode) {
+                $output->writeln('');
+            }
         }
 
-        // Summary
-        $output->writeln('<options=bold>Results Summary:</options=bold>');
-        $output->writeln("Total pings: {$count}");
-        $output->writeln("<info>Successful: {$successCount}</info>");
+        if ($jsonMode) {
+            $output->writeln(json_encode(['type' => 'result', 'summary' => "Pings: {$count}, OK: {$successCount}, failed: {$failCount}"]));
+        } else {
+            // Summary
+            $output->writeln('<options=bold>Results Summary:</options=bold>');
+            $output->writeln("Total pings: {$count}");
+            $output->writeln("<info>Successful: {$successCount}</info>");
 
-        if ($failCount > 0) {
-            $output->writeln("<error>Failed: {$failCount}</error>");
+            if ($failCount > 0) {
+                $output->writeln("<error>Failed: {$failCount}</error>");
+            }
+
+            $successRate = round(($successCount / $count) * 100, 1);
+            $output->writeln("Success rate: {$successRate}%");
         }
-
-        $successRate = round(($successCount / $count) * 100, 1);
-        $output->writeln("Success rate: {$successRate}%");
 
         return $failCount === 0 ? Command::SUCCESS : Command::FAILURE;
     }
