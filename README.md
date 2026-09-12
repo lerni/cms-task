@@ -69,6 +69,24 @@ A `FormField` you drop into any SS form. Provides its own `start` and `stop` HTT
 
 Registered at `/task-stream/$TaskID`. Reads the JSONL stream file line-by-line (tail-f pattern) and sends each line as an SSE event. Supports `Last-Event-ID` for reconnection. Configurable flush padding (`$flush_padding_bytes`) to overcome proxy buffering (e.g. Apache `mod_proxy_fcgi`).
 
+**Authentication:** defaults to `Permission::check('CMS_ACCESS')`, matching `BackgroundTaskField`'s session-based CMS-UI usage. Headless/API consumers that can't carry a CMS session (e.g. a bearer-token-authenticated MCP server) can grant themselves access without weakening that default, by implementing an extension with an `updateStreamAuthorised(HTTPRequest $request): bool` method and adding it to `TaskStreamController.extensions` via YAML — `stream()` calls this as a fallback only when the session check fails, and allows the request through if any extension returns `true`:
+
+```yaml
+Kraftausdruck\Controller\TaskStreamController:
+  extensions:
+    - App\Extensions\MyHeadlessStreamAuthExtension
+```
+
+```php
+class MyHeadlessStreamAuthExtension extends Extension
+{
+    public function updateStreamAuthorised(HTTPRequest $request): bool
+    {
+        return $request->getHeader('Authorization') === 'Bearer ' . Environment::getEnv('MY_API_TOKEN');
+    }
+}
+```
+
 ### BackgroundTaskService
 
 Shared service for the task lifecycle. Resolves task command names to classes, spawns the detached executor script, and manages the progress store.

@@ -2,11 +2,11 @@
 
 namespace Kraftausdruck\Controller;
 
+use Kraftausdruck\Events\TaskEnded;
 use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Security\Permission;
 use SilverStripe\Core\Injector\Injector;
-use Kraftausdruck\Events\TaskEnded;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Kraftausdruck\Contracts\TaskProgressStoreInterface;
 
@@ -42,7 +42,7 @@ class TaskStreamController extends Controller
 
     public function stream(HTTPRequest $request): void
     {
-        if (!Permission::check('CMS_ACCESS')) {
+        if (!$this->isAuthorised($request)) {
             $this->httpError(403, 'Not authorised');
 
             return;
@@ -164,6 +164,22 @@ class TaskStreamController extends Controller
 
         // Must exit to prevent Silverstripe from sending additional response data
         exit();
+    }
+
+    /**
+     * Authorises the CMS-UI session case (BackgroundTaskField) by default; extensions
+     * may grant access via another mechanism (e.g. a headless client's bearer token)
+     * by returning true from an updateStreamAuthorised() hook.
+     */
+    private function isAuthorised(HTTPRequest $request): bool
+    {
+        if (Permission::check('CMS_ACCESS')) {
+            return true;
+        }
+
+        $results = $this->extend('updateStreamAuthorised', $request);
+
+        return in_array(true, $results, true);
     }
 
     /**

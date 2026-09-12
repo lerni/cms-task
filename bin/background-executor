@@ -267,6 +267,15 @@ function buildSakeCommand(string $basePath, string $targetTask, array $options):
     $cmd = "{$sake} tasks:{$targetTask}";
 
     foreach ($options as $key => $value) {
+        if (is_bool($value)) {
+            // VALUE_NONE Symfony options reject a value token entirely; false simply omits the flag.
+            if ($value) {
+                $cmd .= ' --' . $key;
+            }
+
+            continue;
+        }
+
         $cmd .= ' --' . $key . '=' . escapeshellarg((string) $value);
     }
 
