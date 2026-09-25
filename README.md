@@ -95,6 +95,8 @@ Shared service for the task lifecycle. Resolves task command names to classes, s
 
 Uses Symfony's `FilesystemAdapter` directly (bypasses Silverstripe's `CacheFactory` to ensure cache visibility across CLI and web processes). Stream files live at `{TEMP_PATH}/ss_background_tasks/` (falls back to `sys_get_temp_dir()` if `TEMP_PATH` is not defined). The cache holds task metadata; the stream file is the real-time delivery channel.
 
+**Stream file cleanup:** `.stream` files are not pruned by the module. `deleteTask()` exists but is never called automatically, and the cache's TTL only expires the metadata entry — not the `.stream` file sitting next to it on disk. This is a deliberate non-goal, not an oversight: files are small JSONL text, and OS temp-directory cleaning typically catches stragglers. If that's not true in your environment, prune `{TEMP_PATH}/ss_background_tasks/*.stream` yourself (e.g. a cron/logrotate rule).
+
 ### bin/background-executor
 
 Standalone PHP script that runs a BuildTask as a subprocess via `sake` + `proc_open`. Captures stdout line-by-line, writes JSONL to the stream file, and extracts progress from output patterns like `Processing step X/Y` or `Progress: XX%`. Does not boot Silverstripe — only needs composer autoload and the `PsrCacheProgressStore` class.
@@ -218,6 +220,12 @@ A demo admin is available at `/admin/task-runner` via `TaskRunnerAdmin`. It'll b
 Kraftausdruck\Admin\TaskRunnerAdmin:
   ignore_menuitem: true
 ```
+
+## Security
+
+Any CMS user with `CMS_ACCESS` can run any registered task via the field — this is the access surface the module deliberately introduces, mirroring `/dev/tasks`. There's no per-task authorization check built in; add one in your own task (a `canRun()`-style guard before doing work) if a task needs tighter restriction than "any CMS user".
+
+The SSE stream (`/task-stream/{TaskID}`) is gated by the same `CMS_ACCESS` check (see `TaskStreamController` above, including the headless/bearer-token fallback) plus a 96-bit random task ID, so cross-user output exposure isn't a practical concern even without a scope key.
 
 ## Installation
 
